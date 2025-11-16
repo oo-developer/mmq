@@ -14,7 +14,7 @@ type BrokerService interface {
 	RegisterClient(clientID string, user User) BrokerClient
 	UnregisterClient(clientID string)
 	Client(clientId string) BrokerClient
-	Subscribe(clientID, topic string) error
-	Unsubscribe(clientID, topic string) error
+	Subscribe(clientID, topic string) (string, error)
+	Unsubscribe(clientID, topic string, subscriptionId string) error
 	Publish(topic string, payload []byte, publisherID string)
 }

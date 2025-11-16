@@ -8,13 +8,17 @@ import (
 )
 
 type MessageType byte
-type MessageBehaviour byte
+type MessageProperty byte
 
 const (
 	TypeMessage MessageType = iota
 	TypeMessageAck
 	TypeConnect
-	TypeConnAck
+	TypeConnectAck
+	TypeAuthenticate
+	TypeAuthenticateAck
+	TypeSessionKey
+	TypeSessionKeyAck
 	TypePublish
 	TypePublishAck
 	TypeSubscribe
@@ -27,21 +31,31 @@ const (
 )
 
 const (
-	MsgRetained   MessageBehaviour = 1
-	MsgPersistent MessageBehaviour = 2
+	Retained   MessageProperty = 1 << 0
+	Persistent MessageProperty = 1 << 1
 )
 
 type RawMessage struct {
 }
 
 type Message struct {
-	Type     MessageType
-	Topic    string
-	Payload  []byte
-	ClientId string
+	Type           MessageType
+	Properties     MessageProperty
+	Topic          string
+	Payload        []byte
+	ClientId       string
+	SubscriptionId string
 }
 
-func (m *Message) Send(w io.Writer, cypher Cypher) error {
+func (m *Message) IsRetained() bool {
+	return m.Properties&Retained != 0
+}
+
+func (m *Message) IsPersistent() bool {
+	return m.Properties&Persistent != 0
+}
+
+func (m *Message) Send(w io.Writer, cypher Cipher) error {
 	buffer := bytes.Buffer{}
 	err := m.encode(&buffer)
 	if err != nil {
@@ -61,7 +75,7 @@ func (m *Message) Send(w io.Writer, cypher Cypher) error {
 	return nil
 }
 
-func Receive(r io.Reader, cypher Cypher) (*Message, error) {
+func Receive(r io.Reader, cypher Cipher) (*Message, error) {
 	var dataLen uint16
 	if err := binary.Read(r, binary.BigEndian, &dataLen); err != nil {
 		return nil, fmt.Errorf("failed to read topic length: %w", err)
@@ -83,11 +97,13 @@ func Receive(r io.Reader, cypher Cypher) (*Message, error) {
 }
 
 func (m *Message) encode(w io.Writer) error {
-	// Message format: [Type:1][TopicLen:2][Topic:n][PayloadLen:4][Payload:n][ClientIDLen:2][ClientId:n]
+	// Message format: [Type:1][Properties:1][TopicLen:2][Topic:n][PayloadLen:4][Payload:n][ClientIDLen:2][ClientId:n][SubscriptionIdLen:2][SubscriptionId:n]
 	if err := binary.Write(w, binary.BigEndian, m.Type); err != nil {
 		return fmt.Errorf("failed to write type: %w", err)
 	}
-
+	if err := binary.Write(w, binary.BigEndian, m.Properties); err != nil {
+		return fmt.Errorf("failed to write properties: %w", err)
+	}
 	topicBytes := []byte(m.Topic)
 	if err := binary.Write(w, binary.BigEndian, uint16(len(topicBytes))); err != nil {
 		return fmt.Errorf("failed to write topic length: %w", err)
@@ -110,6 +126,13 @@ func (m *Message) encode(w io.Writer) error {
 	if _, err := w.Write(clientIDBytes); err != nil {
 		return fmt.Errorf("failed to write client ID: %w", err)
 	}
+	subscriptionIdBytes := []byte(m.SubscriptionId)
+	if err := binary.Write(w, binary.BigEndian, uint16(len(subscriptionIdBytes))); err != nil {
+		return fmt.Errorf("failed to write subscription ID length: %w", err)
+	}
+	if _, err := w.Write(subscriptionIdBytes); err != nil {
+		return fmt.Errorf("failed to write subscription ID: %w", err)
+	}
 
 	return nil
 }
@@ -120,7 +143,9 @@ func decode(r io.Reader) (*Message, error) {
 	if err := binary.Read(r, binary.BigEndian, &msg.Type); err != nil {
 		return nil, fmt.Errorf("failed to read type: %w", err)
 	}
-
+	if err := binary.Read(r, binary.BigEndian, &msg.Properties); err != nil {
+		return nil, fmt.Errorf("failed to read properties: %w", err)
+	}
 	var topicLen uint16
 	if err := binary.Read(r, binary.BigEndian, &topicLen); err != nil {
 		return nil, fmt.Errorf("failed to read topic length: %w", err)
@@ -149,6 +174,15 @@ func decode(r io.Reader) (*Message, error) {
 		return nil, fmt.Errorf("failed to read client ID: %w", err)
 	}
 	msg.ClientId = string(clientIDBytes)
+	var subscriptionIdLen uint16
+	if err := binary.Read(r, binary.BigEndian, &subscriptionIdLen); err != nil {
+		return nil, fmt.Errorf("failed to read subscription ID length: %w", err)
+	}
+	subscriptionIdBytes := make([]byte, subscriptionIdLen)
+	if _, err := io.ReadFull(r, subscriptionIdBytes); err != nil {
+		return nil, fmt.Errorf("failed to read subscription ID: %w", err)
+	}
+	msg.SubscriptionId = string(subscriptionIdBytes)
 
 	return msg, nil
 }

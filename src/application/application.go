@@ -23,9 +23,9 @@ type application struct {
 	userService      common.UserService
 }
 
-func NewApplication(configFile string) common.Service {
+func NewApplication(config *config.Config) common.Service {
 	app := &application{
-		config: config.Load(configFile),
+		config: config,
 	}
 	app.loggingService = logging.NewLoggingService(app.config.Logging.Format, app.config.Logging.Output, app.config.Logging.Level)
 	app.brokerService = broker.NewBrokerService()
@@ -51,6 +51,7 @@ func (a *application) Shutdown() {
 	a.userService.Shutdown()
 	a.loggingService.Shutdown()
 	log.Info("Application shut down")
+	os.Exit(0)
 }
 
 func (a *application) handleInterrupt() {

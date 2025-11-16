@@ -3,42 +3,52 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"io/ioutil"
 	"log"
 	"net"
+	"os"
 	"sync"
+
+	"github.com/google/uuid"
 )
 
 // MessageHandler is called when a message is received
 type MessageHandler func(topic string, payload []byte)
 
+type Subscription struct {
+	Id      string
+	Topic   string
+	Handler MessageHandler
+}
+
 // Client represents a broker client
 type Client struct {
-	clientID        string
-	config          *Config
-	conn            net.Conn
-	connChannel     net.Conn
-	cypher          Cypher
-	securityEnabled bool
-	messageHandler  MessageHandler
-	done            chan struct{}
-	wg              sync.WaitGroup
-	mu              sync.Mutex
+	clientId         string
+	config           *Config
+	connCommand      net.Conn
+	connPublish      net.Conn
+	clientPrivateKey *KyberPrivateKey
+	noCipher         Cipher
+	handshakeCipher  Cipher
+	transportCipher  Cipher
+	kemCipherText    []byte
+	securityEnabled  bool
+	subscriptions    map[string]*Subscription
+	done             chan struct{}
+	wg               sync.WaitGroup
+	mu               sync.Mutex
 }
 
 // Config holds client configuration
 type Config struct {
-	ClientID             string `json:"clientId"`
 	Network              string `json:"network"`
 	Address              string `json:"address"`
 	User                 string `json:"user"`
 	ClientPrivateKeyFile string `json:"clientPrivateKeyFile"`
-	ServerPublicKey      string `json:"serverPublicKey"`
+	ServerPublicKeyFile  string `json:"serverPublicKeyFile"`
 }
 
 func LoadConfig(configFile string) (*Config, error) {
-	data, err := ioutil.ReadFile(configFile)
+	data, err := os.ReadFile(configFile)
 	if err != nil {
 		return nil, err
 	}
@@ -47,149 +57,227 @@ func LoadConfig(configFile string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	if err != nil {
-		return nil, err
-	}
 	return config, nil
 }
 
 // NewClient creates a new client instance
 func NewClient(config *Config) (*Client, error) {
-	conn, err := net.Dial(config.Network, config.Address)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect: %w", err)
-	}
-
 	client := &Client{
-		clientID:        config.ClientID,
+		clientId:        uuid.NewString(),
 		config:          config,
-		conn:            conn,
 		securityEnabled: false,
 		done:            make(chan struct{}),
+		subscriptions:   make(map[string]*Subscription),
 	}
-	serverPublicKey, err := LoadPublicKey([]byte(config.ServerPublicKey))
-	if err != nil {
-		return nil, fmt.Errorf("failed to load server public key: %w", err)
-	}
-	clientPrivateKey, err := RsaLoadPrivateKeyFile(config.ClientPrivateKeyFile)
+	clientPrivateKey, err := LoadKyberPrivateKeyFile(config.ClientPrivateKeyFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load client private key: %w", err)
 	}
-	client.cypher = NewRsaCypher(clientPrivateKey, serverPublicKey)
+	client.clientPrivateKey = clientPrivateKey
+	client.noCipher = NewNoCipher()
 	return client, nil
 }
 
 func (c *Client) Connect() error {
 	var err error
-	c.conn, err = net.Dial(c.config.Network, c.config.Address)
+	fmt.Println("--------------------- Connect --------------------")
+	c.connCommand, err = net.Dial(c.config.Network, c.config.Address)
 	if err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
-	// Send CONNECT message
+
+	// Send CONNECT (receive server public key)
 	connectMsg := &Message{
-		Type:     TypeConnect,
-		Payload:  []byte(c.config.User),
-		ClientId: c.config.ClientID,
+		Type:    TypeConnect,
+		Payload: []byte("wuff"),
 	}
-	if err := connectMsg.Send(c.conn, c.cypher); err != nil {
+	if err := connectMsg.Send(c.connCommand, c.noCipher); err != nil {
+		return fmt.Errorf("failed to send CONNECT message: %w", err)
+	}
+	msg, err := Receive(c.connCommand, c.noCipher)
+	if err != nil {
+		return fmt.Errorf("failed to receive CONNECT_ACK: %w", err)
+	}
+	if msg.Type != TypeConnectAck {
+		return fmt.Errorf("failed to receive CONNECT_ACK")
+	}
+	serverPublicKey, err := LoadKyberPublicKey(msg.Payload)
+	if err != nil {
+		return fmt.Errorf("failed to load kyber public key: %w", err)
+	}
+	c.handshakeCipher = NewKyberCipher(c.clientPrivateKey, serverPublicKey)
+
+	// Send AUTHENTICATE message
+	authMsg := &Message{
+		Type:     TypeAuthenticate,
+		Payload:  []byte(c.config.User),
+		ClientId: c.clientId,
+	}
+	if err = authMsg.Send(c.connCommand, c.handshakeCipher); err != nil {
 		return fmt.Errorf("failed to send connect: %w", err)
 	}
-
-	msg, err := Receive(c.conn, c.cypher)
+	msg, err = Receive(c.connCommand, c.handshakeCipher)
 	if err != nil {
-		return fmt.Errorf("failed to receive connack: %w", err)
+		return fmt.Errorf("failed to receive AUTHENTICATE_ACK: %w", err)
 	}
-	if msg.Type != TypeConnAck {
-		return fmt.Errorf("expected CONNACK, got %v", msg.Type)
+	if msg.Type != TypeAuthenticateAck {
+		return fmt.Errorf("expected AUTHENTICATE_ACK, got %v", msg.Type)
 	}
 	channelAddress := string(msg.Payload)
-	err = c.connectChannel(channelAddress)
+
+	// Send SESSION_KEY message
+	transportCipher, kemCipherText, err := EstablishChCha20Cipher(serverPublicKey.key)
 	if err != nil {
-		return fmt.Errorf("failed to connect channel: %w", err)
+		return fmt.Errorf("failed to establish chaCha20 cipher: %w", err)
 	}
-	log.Printf("Client %s connected", c.config.ClientID)
-	c.cypher.Enable(c.securityEnabled)
+	c.transportCipher = transportCipher
+	c.kemCipherText = kemCipherText
+	c.transportCipher.Enable(true)
+	sessionKeyMsg := &Message{
+		Type:     TypeSessionKey,
+		Payload:  []byte(kemCipherText),
+		ClientId: c.clientId,
+	}
+	if err = sessionKeyMsg.Send(c.connCommand, c.handshakeCipher); err != nil {
+		return fmt.Errorf("failed to send SESSION_KEY: %w", err)
+	}
+	msg, err = Receive(c.connCommand, c.handshakeCipher)
+	if err != nil {
+		return fmt.Errorf("failed to receive SESSION_KEY_ACK: %w", err)
+	}
+	if msg.Type != TypeSessionKeyAck {
+		return fmt.Errorf("expected SESSION_KEY_ACK, got %v", msg.Type)
+	}
+
+	// Connect to publish socket
+	err = c.connectPublishSocket(channelAddress)
+	if err != nil {
+		return fmt.Errorf("failed to connect publish socket: %w", err)
+	}
+	log.Printf("Client %s connected", c.clientId)
 	return nil
 }
 
-func (c *Client) connectChannel(channelAddress string) error {
+func (c *Client) connectPublishSocket(address string) error {
 	var err error
-	c.connChannel, err = net.Dial(c.config.Network, channelAddress)
+	c.connPublish, err = net.Dial(c.config.Network, address)
 	if err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
-	// Send CONNECT message
+
+	// Send CONNECT (receive server public key)
 	connectMsg := &Message{
-		Type:     TypeConnect,
-		Payload:  []byte(c.config.User),
-		ClientId: c.config.ClientID,
+		Type:    TypeConnect,
+		Payload: []byte("wuff"),
 	}
-	if err := connectMsg.Send(c.connChannel, c.cypher); err != nil {
-		return fmt.Errorf("failed to send connect: %w", err)
+	if err := connectMsg.Send(c.connPublish, c.noCipher); err != nil {
+		return fmt.Errorf("failed to send CONNECT message: %w", err)
+	}
+	msg, err := Receive(c.connPublish, c.noCipher)
+	if err != nil {
+		return fmt.Errorf("failed to receive CONNECT_ACK: %w", err)
+	}
+	if msg.Type != TypeConnectAck {
+		return fmt.Errorf("failed to receive CONNECT_ACK")
 	}
 
-	msg, err := Receive(c.connChannel, c.cypher)
+	// Send AUTHENTICATE message
+	authMsg := &Message{
+		Type:     TypeAuthenticate,
+		Payload:  []byte(c.config.User),
+		ClientId: c.clientId,
+	}
+	if err := authMsg.Send(c.connPublish, c.handshakeCipher); err != nil {
+		return fmt.Errorf("failed to send AUTHENTICATE: %w", err)
+	}
+	msg, err = Receive(c.connPublish, c.handshakeCipher)
 	if err != nil {
-		return fmt.Errorf("failed to receive connack: %w", err)
+		return fmt.Errorf("failed to receive AUTHENTICATE_ACK: %w", err)
 	}
-	if msg.Type != TypeConnAck {
-		return fmt.Errorf("expected CONNACK, got %v", msg.Type)
+	if msg.Type != TypeAuthenticateAck {
+		return fmt.Errorf("expected AUTHENTICATE_ACK, got %v", msg.Type)
 	}
+
+	// Send SESSION_KEY message
+	sessionKeyMsg := &Message{
+		Type:     TypeSessionKey,
+		Payload:  c.kemCipherText,
+		ClientId: c.clientId,
+	}
+	if err = sessionKeyMsg.Send(c.connPublish, c.handshakeCipher); err != nil {
+		return fmt.Errorf("failed to send SESSION_KEY: %w", err)
+	}
+	msg, err = Receive(c.connPublish, c.handshakeCipher)
+	if err != nil {
+		return fmt.Errorf("failed to receive SESSION_KEY_ACK: %w", err)
+	}
+	if msg.Type != TypeSessionKeyAck {
+		return fmt.Errorf("expected SESSION_KEY_ACK, got %v", msg.Type)
+	}
+
 	// END CONNECT
 
-	c.cypher.Enable(c.securityEnabled)
-	go c.receiveChannelLoop()
-	log.Printf("Client %s connected to channel", c.config.ClientID)
+	go c.receivePublishLoop()
+	log.Printf("Client %s connected to publish socket", c.clientId)
 	return nil
-}
-
-// SetMessageHandler sets the handler for received messages
-func (c *Client) SetMessageHandler(handler MessageHandler) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.messageHandler = handler
 }
 
 // Subscribe subscribes to a topic
-func (c *Client) Subscribe(topic string) error {
+func (c *Client) Subscribe(topic string, handler MessageHandler) error {
 	msg := &Message{
 		Type:     TypeSubscribe,
 		Topic:    topic,
-		ClientId: c.clientID,
+		ClientId: c.clientId,
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if err := msg.Send(c.conn, c.cypher); err != nil {
-		return fmt.Errorf("failed to subscribe: %w", err)
+	if err := msg.Send(c.connCommand, c.transportCipher); err != nil {
+		return fmt.Errorf("failed to SUBSCRIBE: %w", err)
 	}
-	if _, err := Receive(c.conn, c.cypher); err != nil {
-		return fmt.Errorf("failed to receive SubscribeAck: %w", err)
+	msgAck, err := Receive(c.connCommand, c.transportCipher)
+	if err != nil {
+		return fmt.Errorf("failed to receive SUBSCRIBE_ACK: %w", err)
 	}
+	sub := &Subscription{
+		Id:      msgAck.SubscriptionId,
+		Topic:   topic,
+		Handler: handler,
+	}
+	c.subscriptions[sub.Id] = sub
+
 	log.Printf("Subscribed to topic: %s", topic)
 	return nil
 }
 
 // Unsubscribe unsubscribes from a topic
 func (c *Client) Unsubscribe(topic string) error {
-	msg := &Message{
-		Type:     TypeUnsubscribe,
-		Topic:    topic,
-		ClientId: c.clientID,
-	}
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if err := msg.Send(c.conn, c.cypher); err != nil {
-		return fmt.Errorf("failed to unsubscribe: %w", err)
+	toDelete := make([]string, 0)
+	for subId, sub := range c.subscriptions {
+		if sub.Topic == topic {
+			toDelete = append(toDelete, subId)
+		}
 	}
-	if _, err := Receive(c.conn, c.cypher); err != nil {
-		return fmt.Errorf("failed to receive UnsubscribeAck: %w", err)
+	for _, id := range toDelete {
+		delete(c.subscriptions, id)
+		msg := &Message{
+			Type:           TypeUnsubscribe,
+			Topic:          topic,
+			ClientId:       c.clientId,
+			SubscriptionId: id,
+		}
+		if err := msg.Send(c.connCommand, c.transportCipher); err != nil {
+			return fmt.Errorf("failed to UNSUBSCRIBE: %w", err)
+		}
+		if _, err := Receive(c.connCommand, c.transportCipher); err != nil {
+			return fmt.Errorf("failed to receive UNSUBSCRIBE_ACK: %w", err)
+		}
+		log.Printf("Unsubscribed from topic: %s", topic)
 	}
-	log.Printf("Unsubscribed from topic: %s", topic)
 	return nil
 }
 
@@ -199,84 +287,43 @@ func (c *Client) Publish(topic string, payload []byte) error {
 		Type:     TypePublish,
 		Topic:    topic,
 		Payload:  payload,
-		ClientId: c.clientID,
+		ClientId: c.clientId,
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if err := msg.Send(c.conn, c.cypher); err != nil {
-		return fmt.Errorf("failed to publish: %w", err)
+	if err := msg.Send(c.connCommand, c.transportCipher); err != nil {
+		return fmt.Errorf("failed to PUBLISH: %w", err)
 	}
-	if _, err := Receive(c.conn, c.cypher); err != nil {
-		return fmt.Errorf("failed to receive PublishAck: %w", err)
+	if _, err := Receive(c.connCommand, c.transportCipher); err != nil {
+		return fmt.Errorf("failed to receive PUBLISH_ACK: %w", err)
 	}
 
 	return nil
 }
 
-func (c *Client) receiveLoop() {
+func (c *Client) receivePublishLoop() {
 	for {
-		msg, err := Receive(c.conn, c.cypher)
+		msg, err := Receive(c.connPublish, c.transportCipher)
 		if err != nil {
-			if err != io.EOF {
-				log.Printf("Receive error: %v", err)
-			}
+			log.Printf("Receive error: %v", err)
 			return
 		}
-		c.handleMessage(msg)
+		c.handlePublishMessage(msg)
 	}
 }
 
-func (c *Client) receiveChannelLoop() {
-	for {
-		msg, err := Receive(c.connChannel, c.cypher)
-		if err != nil {
-			if err != io.EOF {
-				log.Printf("Receive error: %v", err)
-			}
-			return
-		}
-		c.handleChannelMessage(msg)
-	}
-}
-
-func (c *Client) handleMessage(msg *Message) {
+func (c *Client) handlePublishMessage(msg *Message) {
 	switch msg.Type {
 	case TypeMessage:
 		c.mu.Lock()
-		handler := c.messageHandler
-		c.mu.Unlock()
-		if handler != nil {
-			handler(msg.Topic, msg.Payload)
+		if sub, ok := c.subscriptions[msg.SubscriptionId]; ok {
+			c.mu.Unlock()
+			sub.Handler(msg.Topic, msg.Payload)
+		} else {
+			c.mu.Unlock()
 		}
-	case TypePong:
-		// Handle pong
 	default:
-		log.Printf("Unhandled message type: %v", msg.Type)
-	}
-}
-
-func (c *Client) handleChannelMessage(msg *Message) {
-	switch msg.Type {
-	case TypeMessage:
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		handler := c.messageHandler
-		if handler != nil {
-			handler(msg.Topic, msg.Payload)
-		}
-		/*
-			ackMsg := &Message{
-				Type:     TypeMessageAck,
-				ClientId: c.clientID,
-			}
-			if err := ackMsg.Send(c.connChannel, c.cypher); err != nil {
-				log.Printf("Failed to ack message: %v", err)
-			}
-		*/
-	case TypePong:
-		// Handle pong
-	default:
-		log.Printf("Unhandled channel message type: %v", msg.Type)
+		log.Printf("Unhandled publish message type: %v", msg.Type)
 	}
 }
 
@@ -285,17 +332,18 @@ func (c *Client) Disconnect() error {
 	// Send disconnect message
 	disconnectMsg := &Message{
 		Type:     TypeDisconnect,
-		ClientId: c.clientID,
+		ClientId: c.clientId,
 	}
 
-	disconnectMsg.Send(c.conn, c.cypher)
-	if _, err := Receive(c.conn, c.cypher); err != nil {
+	disconnectMsg.Send(c.connCommand, c.transportCipher)
+	if _, err := Receive(c.connCommand, c.transportCipher); err != nil {
 		return fmt.Errorf("failed to receive PublishAck: %w", err)
 	}
 	close(c.done)
-	c.conn.Close()
+	c.connCommand.Close()
+	c.connPublish.Close()
 	c.wg.Wait()
 
-	log.Printf("Client %s disconnected", c.clientID)
+	log.Printf("Client %s disconnected", c.clientId)
 	return nil
 }

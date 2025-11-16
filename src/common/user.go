@@ -1,13 +1,17 @@
 package common
 
-import "crypto/rsa"
+import (
+	api "github.com/oo-developer/tinymq/pkg"
+)
 
 type User interface {
 	Name() string
-	PublicKey() *rsa.PublicKey
+	PublicKey() *api.KyberPublicKey
 }
 
 type UserService interface {
 	Service
 	LookupUserByName(name string) (User, bool)
+	AddUser(userName string) error
+	RemoveUserByName(userName string) error
 }

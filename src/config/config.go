@@ -8,14 +8,8 @@ import (
 
 type Transport struct {
 	Network        string `json:"network"`
-	Address        string `json:"address"`
-	AddressChannel string `json:"addressChannel"`
-	PrivateKeyFile string `json:"privateKeyFile"`
-}
-
-type User struct {
-	Name      string `json:"name"`
-	PublicKey string `json:"publicKey"`
+	AddressCommand string `json:"addressCommand"`
+	AddressPublish string `json:"addressPublish"`
 }
 
 type Logging struct {
@@ -24,10 +18,20 @@ type Logging struct {
 	Format string `json:"format"`
 }
 
+type crypto struct {
+	PrivateKeyFile string `json:"privateKeyFile"`
+	PublicKeyFile  string `json:"publicKeyFile"`
+}
+
+type users struct {
+	DataBaseFile string `json:"databaseFile"`
+}
+
 type Config struct {
 	Transport Transport `json:"transport"`
-	Users     []User    `json:"users"`
 	Logging   Logging   `json:"logging"`
+	Users     users     `json:"users"`
+	Crypto    crypto    `json:"crypto"`
 }
 
 func Load(fileName string) *Config {

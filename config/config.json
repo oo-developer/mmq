@@ -1,12 +1,19 @@
 {
   "transport": {
     "network": "unix",
-    "address": "/tmp/mmq.sock",
-    "addressChannel": "/tmp/mmq_channel.sock"
+    "addressCommand": "/tmp/mmq_c.sock",
+    "addressPublish": "/tmp/mmq_p.sock"
   },
   "logging": {
     "output": "stdout",
     "level": "debug",
     "format": "text"
+  },
+  "users": {
+    "databaseFile": "bin/users.db"
+  },
+  "crypto": {
+    "privateKeyFile": "bin/privateKey.pem",
+    "publicKeyFile": "bin/publicKey.pem"
   }
 }

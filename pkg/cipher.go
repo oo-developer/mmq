@@ -1,6 +1,6 @@
 package api
 
-type Cypher interface {
+type Cipher interface {
 	Encrypt([]byte) ([]byte, error)
 	Decrypt([]byte) ([]byte, error)
 	Enable(enable bool)

@@ -5,17 +5,23 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/google/uuid"
 	"github.com/oo-developer/tinymq/pkg"
 	"github.com/oo-developer/tinymq/src/common"
 	log "github.com/oo-developer/tinymq/src/logging"
 )
 
+type subscription struct {
+	id       string
+	clientId string
+	topic    string
+}
+
 type clientInfo struct {
 	id             string
 	user           common.User
 	messageChannel chan *api.Message
-	subscriptions  map[string]bool
-	mu             sync.RWMutex
+	mutex          sync.RWMutex
 }
 
 func (c *clientInfo) Id() string {
@@ -28,16 +34,29 @@ func (c *clientInfo) MessageChan() <-chan *api.Message {
 
 // broker manages message routing
 type broker struct {
-	clients       map[string]*clientInfo
-	subscriptions map[string]map[string]*clientInfo // topic -> clientID -> clientInfo
-	mu            sync.RWMutex
+	clients        map[string]*clientInfo
+	subscriptions  map[string]map[string]*subscription
+	matchCache     map[string][]string
+	messages       map[string]*api.Message
+	publishChannel chan *api.Message
+	mu             sync.RWMutex
 }
 
 func NewBrokerService() common.BrokerService {
-	return &broker{
-		clients:       make(map[string]*clientInfo),
-		subscriptions: make(map[string]map[string]*clientInfo),
+	b := &broker{
+		clients:        make(map[string]*clientInfo),
+		subscriptions:  make(map[string]map[string]*subscription),
+		matchCache:     make(map[string][]string),
+		messages:       make(map[string]*api.Message),
+		publishChannel: make(chan *api.Message, 100000),
 	}
+	go func() {
+		for msg := range b.publishChannel {
+			//msg := <-b.publishChannel
+			b.publish(msg)
+		}
+	}()
+	return b
 }
 
 func (b *broker) Start() {
@@ -48,40 +67,44 @@ func (b *broker) Shutdown() {
 	log.Info("BrokerService shut down")
 }
 
-func (b *broker) RegisterClient(clientID string, user common.User) common.BrokerClient {
+func (b *broker) RegisterClient(clientId string, user common.User) common.BrokerClient {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	client := &clientInfo{
-		id:             clientID,
+		id:             uuid.NewString(),
 		user:           user,
-		messageChannel: make(chan *api.Message, 100000),
-		subscriptions:  make(map[string]bool),
+		messageChannel: make(chan *api.Message, 1000),
 	}
 
-	b.clients[clientID] = client
-	log.Infof("Client registered: %s", clientID)
+	b.clients[clientId] = client
+	log.Infof("Client registered: %s", clientId)
 	return client
 }
 
-func (b *broker) UnregisterClient(clientID string) {
+func (b *broker) UnregisterClient(clientId string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	client, exists := b.clients[clientID]
+	client, exists := b.clients[clientId]
 	if !exists {
 		return
 	}
-	for topic := range client.subscriptions {
-		if subscribers, ok := b.subscriptions[topic]; ok {
-			delete(subscribers, clientID)
-			if len(subscribers) == 0 {
-				delete(b.subscriptions, topic)
+
+	for _, topic := range b.subscriptions {
+		toDelete := make([]*subscription, 0)
+		for _, sub := range topic {
+			if sub.clientId == clientId {
+				toDelete = append(toDelete, sub)
 			}
 		}
+		for _, sub := range toDelete {
+			delete(topic, sub.id)
+		}
 	}
+
 	close(client.messageChannel)
-	delete(b.clients, clientID)
-	log.Infof("Client unregistered: %s", clientID)
+	delete(b.clients, clientId)
+	log.Infof("Client unregistered: %s", clientId)
 }
 
 func (b *broker) Client(clientId string) common.BrokerClient {
@@ -94,30 +117,34 @@ func (b *broker) Client(clientId string) common.BrokerClient {
 }
 
 // Subscribe adds a subscription for a clientInfo
-func (b *broker) Subscribe(clientID, topic string) error {
+func (b *broker) Subscribe(clientID, topic string) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	client, exists := b.clients[clientID]
 	if !exists {
-		return fmt.Errorf("Client not found: %s", clientID)
+		return "", fmt.Errorf("Client not found: %s", clientID)
 	}
 
-	client.mu.Lock()
-	client.subscriptions[topic] = true
-	client.mu.Unlock()
+	client.mutex.Lock()
+	defer client.mutex.Unlock()
+	sub := &subscription{
+		id:       uuid.NewString(),
+		clientId: clientID,
+		topic:    topic,
+	}
 
 	if _, ok := b.subscriptions[topic]; !ok {
-		b.subscriptions[topic] = make(map[string]*clientInfo)
+		b.subscriptions[topic] = make(map[string]*subscription)
 	}
-	b.subscriptions[topic][clientID] = client
+	b.subscriptions[topic][sub.id] = sub
 
 	log.Infof("Client %s subscribed to topic: %s", clientID, topic)
-	return nil
+	return sub.id, nil
 }
 
 // Unsubscribe removes a subscription
-func (b *broker) Unsubscribe(clientID, topic string) error {
+func (b *broker) Unsubscribe(clientID, topic string, subscriptionId string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -126,14 +153,22 @@ func (b *broker) Unsubscribe(clientID, topic string) error {
 		return fmt.Errorf("Client not found: %s", clientID)
 	}
 
-	client.mu.Lock()
-	delete(client.subscriptions, topic)
-	client.mu.Unlock()
+	client.mutex.Lock()
+	defer client.mutex.Unlock()
 
-	if subscribers, ok := b.subscriptions[topic]; ok {
-		delete(subscribers, clientID)
-		if len(subscribers) == 0 {
+	for _, topicEntry := range b.subscriptions {
+		toDelete := make([]*subscription, 0)
+		for _, sub := range topicEntry {
+			if sub.topic == topic && sub.id == subscriptionId {
+				toDelete = append(toDelete, sub)
+			}
+		}
+		for _, sub := range toDelete {
+			delete(topicEntry, sub.id)
+		}
+		if len(topicEntry) == 0 {
 			delete(b.subscriptions, topic)
+			break
 		}
 	}
 
@@ -142,36 +177,45 @@ func (b *broker) Unsubscribe(clientID, topic string) error {
 }
 
 func (b *broker) Publish(topic string, payload []byte, publisherID string) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	matches := b.findMatchingTopics(topic)
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	msg := &api.Message{
 		Type:     api.TypeMessage,
 		Topic:    topic,
 		Payload:  payload,
 		ClientId: publisherID,
 	}
-	sentCount := 0
-	for matchTopic := range matches {
-		if subscribers, ok := b.subscriptions[matchTopic]; ok {
-			for _, client := range subscribers {
-				client.messageChannel <- msg
-				sentCount++
+	if msg.IsRetained() {
+		b.messages[topic] = msg
+	}
+	b.publishChannel <- msg
+}
+
+func (b *broker) publish(msg *api.Message) {
+	go func() {
+		matches := b.findMatchingTopics(msg.Topic)
+		for _, match := range matches {
+			for _, subs := range b.subscriptions[match] {
+				if client, ok := b.clients[subs.clientId]; ok {
+					msgCopy := *msg
+					msgCopy.SubscriptionId = subs.id
+					client.messageChannel <- &msgCopy
+				}
+			}
+		}
+	}()
+}
+
+func (b *broker) findMatchingTopics(publishedTopic string) []string {
+	if _, ok := b.matchCache[publishedTopic]; !ok {
+		b.matchCache[publishedTopic] = make([]string, 0)
+		for subTopic := range b.subscriptions {
+			if b.topicMatches(subTopic, publishedTopic) {
+				b.matchCache[publishedTopic] = append(b.matchCache[publishedTopic], subTopic)
 			}
 		}
 	}
-	log.Debugf("Published to topic %s: %d subscribers received message", topic, sentCount)
-}
-
-func (b *broker) findMatchingTopics(publishedTopic string) map[string]bool {
-	matches := make(map[string]bool)
-	for subTopic := range b.subscriptions {
-		if b.topicMatches(subTopic, publishedTopic) {
-			matches[subTopic] = true
-		}
-	}
-	return matches
+	return b.matchCache[publishedTopic]
 }
 
 // topicMatches checks if a subscription topic matches a published topic

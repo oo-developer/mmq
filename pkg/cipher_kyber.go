@@ -16,6 +16,46 @@ import (
 // Kyber768 provides security equivalent to AES-192 (NIST Level 3)
 // Other options: kyber512 (AES-128), kyber1024 (AES-256)
 
+type kyberCipher struct {
+	privateKey *KyberPrivateKey
+	publicKey  *KyberPublicKey
+	enabled    bool
+}
+
+func NewKyberCipher(privateKey *KyberPrivateKey, publicKey *KyberPublicKey) Cipher {
+	return &kyberCipher{
+		privateKey: privateKey,
+		publicKey:  publicKey,
+		enabled:    true,
+	}
+}
+
+func (k *kyberCipher) Encrypt(bytes []byte) ([]byte, error) {
+	if k.enabled {
+		decrypted, err := EncryptKyber(k.publicKey, bytes)
+		if err != nil {
+			return nil, err
+		}
+		return decrypted, nil
+	}
+	return bytes, nil
+}
+
+func (k *kyberCipher) Decrypt(bytes []byte) ([]byte, error) {
+	if k.enabled {
+		encrypted, err := DecryptKyber(k.privateKey, bytes)
+		if err != nil {
+			return nil, err
+		}
+		return encrypted, nil
+	}
+	return bytes, nil
+}
+
+func (k *kyberCipher) Enable(enable bool) {
+	k.enabled = enable
+}
+
 type KyberPublicKey struct {
 	key *kyber768.PublicKey
 }

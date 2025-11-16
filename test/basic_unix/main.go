@@ -3,12 +3,12 @@ package main
 import (
 	"flag"
 	"log"
-	"strconv"
 	"sync"
 	"time"
 
 	tinymq "github.com/oo-developer/tinymq/pkg"
 	"github.com/oo-developer/tinymq/src/application"
+	"github.com/oo-developer/tinymq/src/config"
 )
 
 const (
@@ -27,6 +27,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	start := time.Now().UnixMilli()
 	client, err := tinymq.NewClient(clientConfig)
 	if err != nil {
 		panic(err)
@@ -36,19 +37,28 @@ func main() {
 		panic(err)
 	}
 
-	countRecived := 0
-	client.SetMessageHandler(func(topic string, payload []byte) {
-		countRecived++
-		if countRecived%10 == 0 {
-			log.Printf("Received %d messages", countRecived)
+	countReceived := 0
+	client.Subscribe(TOPIC_TEST1, func(topic string, payload []byte) {
+		countReceived++
+		if countReceived%100000 == 0 {
+			log.Printf("Received %d messages", countReceived)
+		}
+		if countReceived >= 1000000 {
+			end := time.Now().UnixMilli()
+			span := end - start
+			msPerMsg := float64(span) / float64(1000000)
+			log.Printf("Received %d messages in %.3f ms per message", countReceived, msPerMsg)
+			client.Unsubscribe(TOPIC_TEST1)
+
 		}
 	})
-	client.Subscribe(TOPIC_TEST1)
-	client.Subscribe(TOPIC_TEST2)
 
+	msg := "This is a short message."
+	msg += msg
+	log.Printf("Message size: %d ", len(msg))
 	for ii := 0; ii < 1000000; ii++ {
-		client.Publish(TOPIC_TEST1, []byte(strconv.Itoa(ii)))
-		if ii%1000 == 0 {
+		client.Publish(TOPIC_TEST1, []byte(msg))
+		if ii%100000 == 0 {
 			log.Printf("Sent %d messages", ii)
 		}
 	}
@@ -59,10 +69,11 @@ func main() {
 }
 
 func startServer(configFile string) {
+	configuration := config.Load(configFile)
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	go func() {
-		app := application.NewApplication(configFile)
+		app := application.NewApplication(configuration)
 		wg.Done()
 		app.Start()
 	}()
