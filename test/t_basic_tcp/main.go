@@ -11,10 +11,9 @@ import (
 
 const (
 	TOPIC_TEST1 = "test/test1/#"
-	TOPIC_TEST2 = "test/test2/value"
 )
 
-const totalCount = 100000
+const totalCount = 1000000
 
 func main() {
 	serverConfigFile := flag.String("server-config", "server_config.json", "Path to server config file")

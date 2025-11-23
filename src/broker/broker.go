@@ -139,6 +139,20 @@ func (b *broker) AllClients() []common.BrokerClient {
 	return clients
 }
 
+func (b *broker) AllTopics() []*common.Topic {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	topics := make([]*common.Topic, 0, len(b.messages))
+	for topicName, msg := range b.messages {
+		topics = append(topics, &common.Topic{
+			Topic:      topicName,
+			Persistent: msg.IsPersistent(),
+			Retained:   msg.IsRetained(),
+		})
+	}
+	return topics
+}
+
 // Subscribe adds a subscription for a clientInfo
 func (b *broker) Subscribe(clientID, topic string) (string, error) {
 	b.mu.Lock()
@@ -164,9 +178,11 @@ func (b *broker) Subscribe(clientID, topic string) (string, error) {
 	// Send retained messages
 	for _, msg := range b.messages {
 		if b.topicMatches(msg.Topic, topic) {
-			msgCopy := *msg
-			msgCopy.SubscriptionId = sub.id
-			client.messageChannel <- &msgCopy
+			if msg.IsRetained() {
+				msgCopy := *msg
+				msgCopy.SubscriptionId = sub.id
+				client.messageChannel <- &msgCopy
+			}
 		}
 	}
 
@@ -222,11 +238,8 @@ func (b *broker) Publish(properties api.MessageProperty, topic string, payload [
 		b.storage.RemoveMessageChannel() <- msg.Topic
 		return
 	}
-	if msg.IsRetained() {
-		b.messages[topic] = msg
-	}
+	b.messages[topic] = msg
 	if msg.IsPersistent() {
-		b.messages[topic] = msg
 		b.storage.AddMessageChannel() <- msg
 	}
 	b.publishChannel <- msg

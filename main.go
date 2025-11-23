@@ -28,6 +28,14 @@ func main() {
 }
 
 func initialize(configuration *config.Config) {
+
+	if configuration.Limits.MaxTopicLength > 0 {
+		api.MaxTopicLength = configuration.Limits.MaxTopicLength
+	}
+	if configuration.Limits.MaxPayloadLength > 0 {
+		api.MaxPayloadLength = configuration.Limits.MaxPayloadLength
+	}
+
 	if _, err := os.Stat(configuration.Crypto.PrivateKeyFile); os.IsNotExist(err) {
 		fmt.Printf("[OK] PrivateKeyFile does not exist: %s\n", configuration.Crypto.PrivateKeyFile)
 		fmt.Printf("[OK] Generating new key pair ...\n")

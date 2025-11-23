@@ -47,6 +47,8 @@ func (c *cli) Execute(clientId string, payload []byte) []byte {
 		return c.allUsers(client, payload)
 	case common.COMMAND_LIST_CONNECTIONS:
 		return c.allConnections(client, payload)
+	case common.COMMAND_LIST_TOPICS:
+		return c.allTopics(client, payload)
 	default:
 		log.Errorf("Unknown cli command type: %v", request.Type)
 		c.returnError(fmt.Errorf("unknown cli command type: %v", request.Type))
@@ -131,6 +133,26 @@ func (c *cli) allConnections(client common.BrokerClient, payload []byte) []byte 
 			Id:       entry.Id(),
 			Username: entry.User().Name(),
 			Admin:    entry.User().IsAdmin(),
+		})
+	}
+	value, err := msgpack.Marshal(resultList)
+	if err != nil {
+		return c.returnError(err)
+	}
+	return value
+}
+
+func (c *cli) allTopics(client common.BrokerClient, payload []byte) []byte {
+	if !client.User().IsAdmin() {
+		return c.returnError(fmt.Errorf("user '%s' is not admin", client.User().Name()))
+	}
+	resultList := &common.ListTopicsResp{}
+	resultList.Topics = make([]common.TopicResp, 0)
+	for _, entry := range c.brokerService.AllTopics() {
+		resultList.Topics = append(resultList.Topics, common.TopicResp{
+			Topic:      entry.Topic,
+			Persistent: entry.Persistent,
+			Retained:   entry.Retained,
 		})
 	}
 	value, err := msgpack.Marshal(resultList)

@@ -18,20 +18,26 @@ type Logging struct {
 	Format string `json:"format"`
 }
 
-type crypto struct {
+type Crypto struct {
 	PrivateKeyFile string `json:"privateKeyFile"`
 	PublicKeyFile  string `json:"publicKeyFile"`
 }
 
-type storage struct {
+type Storage struct {
 	DbFile string `json:"dbFile"`
+}
+
+type Limits struct {
+	MaxTopicLength   int `json:"maxTopicLength"`
+	MaxPayloadLength int `json:"maxPayloadLength"`
 }
 
 type Config struct {
 	Transport Transport `json:"transport"`
 	Logging   Logging   `json:"logging"`
-	Storage   storage   `json:"storage"`
-	Crypto    crypto    `json:"crypto"`
+	Storage   Storage   `json:"storage"`
+	Crypto    Crypto    `json:"crypto"`
+	Limits    Limits    `json:"limits"`
 }
 
 func Load(fileName string) *Config {

@@ -12,7 +12,6 @@ import (
 )
 
 type modUsers struct {
-	client   *api.Client
 	commands map[string]Command
 }
 
@@ -112,7 +111,7 @@ func (m *modUsers) Remove(client *api.Client, args ...string) error {
 	name := flagSet.String("name", "", "Name of the new user")
 	flagSet.Parse(args)
 	if *name == "" {
-		return errors.New("name is required")
+		return errors.New("--name is required")
 	}
 	request := common.RemoveUserReq{
 		CliRequest: common.CliRequest{

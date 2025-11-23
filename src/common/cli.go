@@ -5,6 +5,7 @@ const (
 	COMMAND_REMOVE_USER
 	COMMAND_LIST_USERS
 	COMMAND_LIST_CONNECTIONS
+	COMMAND_LIST_TOPICS
 )
 
 type CliService interface {
@@ -68,4 +69,19 @@ type ConnectionResp struct {
 type ListConnectionsResp struct {
 	CliResponse
 	Connections []ConnectionResp `json:"connections"`
+}
+
+type ListTopicsReq struct {
+	CliRequest
+}
+
+type TopicResp struct {
+	Topic      string `json:"topic"`
+	Persistent bool   `json:"persistent"`
+	Retained   bool   `json:"retained"`
+}
+
+type ListTopicsResp struct {
+	CliResponse
+	Topics []TopicResp `json:"topics"`
 }

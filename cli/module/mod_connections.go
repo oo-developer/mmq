@@ -10,7 +10,6 @@ import (
 )
 
 type modClients struct {
-	client   *api.Client
 	commands map[string]Command
 }
 

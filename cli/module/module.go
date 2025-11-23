@@ -5,6 +5,7 @@ import api "github.com/oo-developer/mmq/pkg"
 var Modules = map[string]Module{
 	"users":       NewModUsers(),
 	"connections": NewModClients(),
+	"topics":      NewModTopics(),
 }
 
 type Command func(client *api.Client, args ...string) error
