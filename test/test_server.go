@@ -3,9 +3,9 @@ package testtools
 import (
 	"time"
 
-	"github.com/oo-developer/tinymq/src/application"
-	"github.com/oo-developer/tinymq/src/common"
-	"github.com/oo-developer/tinymq/src/config"
+	"github.com/oo-developer/mmq/src/application"
+	"github.com/oo-developer/mmq/src/common"
+	"github.com/oo-developer/mmq/src/config"
 )
 
 func StartServer(configFile string) common.Service {

@@ -34,7 +34,7 @@ run-sub:
 	@./bin/subscriber -topic "test/#"
 
 run-pub:
-	@./bin/publisher -topic "test/demo" -message "Hello from tinymq!" -interval 2
+	@./bin/publisher -topic "test/demo" -message "Hello from mmq!" -interval 2
 
 # Generate self-signed certificates for testing
 certs:

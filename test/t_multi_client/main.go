@@ -10,11 +10,12 @@ import (
 )
 
 const (
-	TOPIC_TEST1 = "test/test1/#"
+	TOPIC_TEST1 = "test/test1/"
 	TOPIC_TEST2 = "test/test2/value"
 )
 
-const totalCount = 100000
+const totalCount = 10000000
+const numOfClients = 50
 
 func main() {
 	serverConfigFile := flag.String("server-config", "server_config.json", "Path to server config file")
@@ -38,15 +39,16 @@ func main() {
 	}
 
 	countReceived := 0
+
 	client.Subscribe(TOPIC_TEST1, func(topic string, payload []byte) {
 		countReceived++
 		if countReceived%100000 == 0 {
 			log.Printf("Received %d messages", countReceived)
 		}
-		if countReceived >= totalCount {
+		if countReceived >= totalCount*numOfClients {
 			end := time.Now().UnixMilli()
 			span := end - start
-			msPerMsg := float64(span) / float64(totalCount)
+			msPerMsg := float64(span) / float64(totalCount*numOfClients)
 			log.Printf("Received %d messages in %.3f ms per message", countReceived, msPerMsg)
 			log.Printf("Sent %d messages in %.2f s", countReceived, float64(end-start)/1000.0)
 			client.Unsubscribe(TOPIC_TEST1)
@@ -54,33 +56,34 @@ func main() {
 		}
 	})
 
-	msg := "This is a short message."
-	msg += msg
-	log.Printf("Message size: %d ", len(msg))
-	for ii := 0; ii <= totalCount; ii++ {
-		client.Publish(TOPIC_TEST1, []byte(msg))
-		if ii%100000 == 0 {
-			log.Printf("Sent %d messages", ii)
-		}
+	for jj := 0; jj < numOfClients; jj++ {
+		go func() {
+			client, err := mmq.NewClient(clientConfig)
+			if err != nil {
+				panic(err)
+			}
+			err = client.Connect()
+			if err != nil {
+				panic(err)
+			}
+			msg := "This is a short message."
+			msg += msg
+			//log.Printf("Message size: %d ", len(msg))
+			for ii := 0; ii <= totalCount; ii++ {
+				client.Publish(TOPIC_TEST1, []byte(msg))
+				if ii%100000 == 0 {
+					//log.Printf("Sent %d messages from client %d ", ii, jj)
+				}
+			}
+			client.Disconnect()
+		}()
 	}
 
 	for {
 		time.Sleep(10 * time.Second)
-		if countReceived >= totalCount {
+		if countReceived >= totalCount*numOfClients {
 			server.Shutdown()
 			break
 		}
 	}
 }
-
-/*
-func startServer(configFile string) common.Service {
-	configuration := config.Load(configFile)
-	app := application.NewApplication(configuration)
-	go func() {
-		app.Start()
-	}()
-	time.Sleep(1 * time.Second)
-	return app
-}
-*/

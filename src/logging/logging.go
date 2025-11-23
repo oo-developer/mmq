@@ -4,7 +4,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/oo-developer/tinymq/src/common"
+	"github.com/oo-developer/mmq/src/common"
 	log "github.com/sirupsen/logrus"
 )
 

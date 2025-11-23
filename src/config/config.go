@@ -27,14 +27,9 @@ type storage struct {
 	DbFile string `json:"dbFile"`
 }
 
-type users struct {
-	DataBaseFile string `json:"databaseFile"`
-}
-
 type Config struct {
 	Transport Transport `json:"transport"`
 	Logging   Logging   `json:"logging"`
-	Users     users     `json:"users"`
 	Storage   storage   `json:"storage"`
 	Crypto    crypto    `json:"crypto"`
 }

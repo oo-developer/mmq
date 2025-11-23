@@ -27,6 +27,8 @@ const (
 	TypeUnsubscribeAck
 	TypePing
 	TypePong
+	TypeCliCommand
+	TypeCliCommandAck
 	TypeDisconnect
 )
 

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
-	tinymq "github.com/oo-developer/tinymq/pkg"
-	testtools "github.com/oo-developer/tinymq/test"
+	mmq "github.com/oo-developer/mmq/pkg"
+	testtools "github.com/oo-developer/mmq/test"
 )
 
 const (
@@ -20,11 +20,11 @@ func main() {
 
 	server := testtools.StartServer(*serverConfigFile)
 
-	clientConfig, err := tinymq.LoadConfig(*clientConfigFile)
+	clientConfig, err := mmq.LoadConfig(*clientConfigFile)
 	if err != nil {
 		panic(err)
 	}
-	client, err := tinymq.NewClient(clientConfig)
+	client, err := mmq.NewClient(clientConfig)
 	if err != nil {
 		panic(err)
 	}
@@ -33,7 +33,7 @@ func main() {
 		panic(err)
 	}
 
-	client.Publish(TOPIC_TEST1, []byte("Retained test"), tinymq.Retained)
+	client.Publish(TOPIC_TEST1, []byte("Retained test"), mmq.Retained)
 	client.Disconnect()
 
 	// Disconnect and reconnect. The retained message should be published to new subscription

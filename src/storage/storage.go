@@ -4,12 +4,17 @@ import (
 	"sync"
 	"time"
 
-	api "github.com/oo-developer/tinymq/pkg"
-	"github.com/oo-developer/tinymq/src/common"
-	"github.com/oo-developer/tinymq/src/config"
-	log "github.com/oo-developer/tinymq/src/logging"
+	api "github.com/oo-developer/mmq/pkg"
+	"github.com/oo-developer/mmq/src/common"
+	"github.com/oo-developer/mmq/src/config"
+	log "github.com/oo-developer/mmq/src/logging"
 	"github.com/vmihailenco/msgpack/v5"
 	"go.etcd.io/bbolt"
+)
+
+const (
+	BUCKET_MESSAGES = "messages"
+	BUCKET_USERS    = "user"
 )
 
 type storage struct {
@@ -34,7 +39,7 @@ func NewStorage(config *config.Config) common.StorageService {
 
 func (s *storage) Start() {
 	db, err := bbolt.Open(s.config.Storage.DbFile, 0600, &bbolt.Options{
-		Timeout:         1 * time.Second,
+		Timeout:         3 * time.Second,
 		NoGrowSync:      true,
 		NoFreelistSync:  true,
 		FreelistType:    bbolt.FreelistArrayType,
@@ -45,7 +50,7 @@ func (s *storage) Start() {
 	}
 	s.db = db
 	err = db.Update(func(tx *bbolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte("users"))
+		_, err := tx.CreateBucketIfNotExists([]byte("user"))
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -95,6 +100,7 @@ func (s *storage) AddMessageChannel() chan *api.Message {
 
 func (s *storage) Shutdown() {
 	s.addMessages()
+	s.db.Close()
 	log.Info("StorageService shut down")
 }
 
@@ -103,9 +109,9 @@ func (s *storage) addMessages() {
 	defer s.mu.Unlock()
 	err := s.db.Update(func(tx *bbolt.Tx) error {
 		for _, msg := range s.messageCache {
-			messageBucket := tx.Bucket([]byte("messages"))
+			bucket := tx.Bucket([]byte(BUCKET_MESSAGES))
 			value, _ := msgpack.Marshal(msg)
-			err := messageBucket.Put([]byte(msg.Topic), value)
+			err := bucket.Put([]byte(msg.Topic), value)
 			if err != nil {
 				return err
 			}
@@ -122,8 +128,8 @@ func (s *storage) removeMessage(topic string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	err := s.db.Update(func(tx *bbolt.Tx) error {
-		messageBucket := tx.Bucket([]byte("messages"))
-		err := messageBucket.Delete([]byte(topic))
+		bucket := tx.Bucket([]byte(BUCKET_MESSAGES))
+		err := bucket.Delete([]byte(topic))
 		return err
 	})
 	if err != nil {
@@ -136,8 +142,8 @@ func (s *storage) GetAllMessages() []*api.Message {
 	defer s.mu.RUnlock()
 	messages := make([]*api.Message, 0)
 	err := s.db.View(func(tx *bbolt.Tx) error {
-		messageBucket := tx.Bucket([]byte("messages"))
-		err := messageBucket.ForEach(func(k, v []byte) error {
+		bucket := tx.Bucket([]byte(BUCKET_MESSAGES))
+		err := bucket.ForEach(func(k, v []byte) error {
 			msg := &api.Message{}
 			err := msgpack.Unmarshal(v, msg)
 			if err != nil {
@@ -153,4 +159,62 @@ func (s *storage) GetAllMessages() []*api.Message {
 		log.Errorf("Error getting all messages: %v", err)
 	}
 	return messages
+}
+
+func (s *storage) GetAllUsers() []common.User {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	users := make([]common.User, 0)
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(BUCKET_USERS))
+		err := bucket.ForEach(func(k, v []byte) error {
+			msg := &user{}
+			err := msgpack.Unmarshal(v, msg)
+			if err != nil {
+				return err
+			}
+			users = append(users, msg)
+			return nil
+		})
+		return err
+	})
+
+	if err != nil {
+		log.Errorf("Error getting all users: %v", err)
+	}
+	return users
+}
+
+func (s *storage) AddUser(u common.User) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	userEntry := &user{
+		NameValue:         u.Name(),
+		AdminValue:        u.IsAdmin(),
+		PublicKeyPemValue: u.PublicKeyPem(),
+	}
+	err := s.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(BUCKET_USERS))
+		value, _ := msgpack.Marshal(userEntry)
+		err := bucket.Put([]byte(userEntry.Name()), value)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+	return err
+}
+
+func (s *storage) RemoveUserByName(userName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err := s.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(BUCKET_USERS))
+		err := bucket.Delete([]byte(userName))
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+	return err
 }

@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -45,7 +47,6 @@ type Config struct {
 	Address              string `json:"address"`
 	User                 string `json:"user"`
 	ClientPrivateKeyFile string `json:"clientPrivateKeyFile"`
-	ServerPublicKeyFile  string `json:"serverPublicKeyFile"`
 }
 
 func LoadConfig(configFile string) (*Config, error) {
@@ -69,7 +70,7 @@ func NewClient(config *Config) (*Client, error) {
 		securityEnabled: false,
 		done:            make(chan struct{}),
 		subscriptions:   make(map[string]*Subscription),
-		messageChannel:  make(chan *Message, 10000),
+		messageChannel:  make(chan *Message, 1000),
 	}
 	clientPrivateKey, err := LoadKyberPrivateKeyFile(config.ClientPrivateKeyFile)
 	if err != nil {
@@ -156,7 +157,6 @@ func (c *Client) Connect() error {
 	if err != nil {
 		return fmt.Errorf("failed to connect publish socket: %w", err)
 	}
-	log.Printf("Client %s connected", c.clientId)
 	return nil
 }
 
@@ -220,7 +220,6 @@ func (c *Client) connectPublishSocket(address string) error {
 	// END CONNECT
 
 	go c.receivePublishLoop()
-	log.Printf("Client %s connected to publish socket", c.clientId)
 	return nil
 }
 
@@ -247,8 +246,6 @@ func (c *Client) Subscribe(topic string, handler MessageHandler) error {
 	c.mu.Lock()
 	c.subscriptions[sub.Id] = sub
 	c.mu.Unlock()
-
-	log.Printf("Subscribed to topic: %s", topic)
 	return nil
 }
 
@@ -307,13 +304,30 @@ func (c *Client) Publish(topic string, payload []byte, properties ...MessageProp
 	return nil
 }
 
-func (c *Client) receivePublishLoop() {
+func (c *Client) SendCommand(command []byte) ([]byte, error) {
+	msg := &Message{
+		Type:     TypeCliCommand,
+		Payload:  command,
+		ClientId: c.clientId,
+	}
+	if err := msg.Send(c.connCommand, c.transportCipher); err != nil {
+		return nil, fmt.Errorf("failed to send CLI_COMMAND: %w", err)
+	}
+	msg, err := Receive(c.connCommand, c.transportCipher)
+	if err != nil || msg.Type != TypeCliCommandAck {
+		return nil, fmt.Errorf("failed to receive CLI_COMMAND_ACK: %w", err)
+	}
+	return msg.Payload, nil
+}
 
+func (c *Client) receivePublishLoop() {
 	for {
 		msg, err := Receive(c.connPublish, c.transportCipher)
-		if err != nil {
-			log.Printf("Receive error: %v", err)
+		if errors.Is(err, io.EOF) {
 			return
+		}
+		if err != nil {
+			log.Printf("Error receiving message: %v", err)
 		}
 		c.messageChannel <- msg
 	}
@@ -322,18 +336,20 @@ func (c *Client) receivePublishLoop() {
 func (c *Client) handlePublishMessage() {
 	go func() {
 		for {
-			msg := <-c.messageChannel
-			switch msg.Type {
-			case TypeMessage:
-				c.mu.RLock()
-				if sub, ok := c.subscriptions[msg.SubscriptionId]; ok {
-					c.mu.RUnlock()
-					sub.Handler(msg.Topic, msg.Payload)
-				} else {
-					c.mu.RUnlock()
+			select {
+			case msg := <-c.messageChannel:
+				switch msg.Type {
+				case TypeMessage:
+					c.mu.RLock()
+					if sub, ok := c.subscriptions[msg.SubscriptionId]; ok {
+						c.mu.RUnlock()
+						sub.Handler(msg.Topic, msg.Payload)
+					} else {
+						c.mu.RUnlock()
+					}
+				default:
+					log.Printf("Unhandled publish message type: %v", msg.Type)
 				}
-			default:
-				log.Printf("Unhandled publish message type: %v", msg.Type)
 			}
 		}
 	}()
@@ -353,7 +369,5 @@ func (c *Client) Disconnect() error {
 	}
 	c.connCommand.Close()
 	c.connPublish.Close()
-
-	log.Printf("Client %s disconnected", c.clientId)
 	return nil
 }

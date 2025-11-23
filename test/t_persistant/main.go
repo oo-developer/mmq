@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	tinymq "github.com/oo-developer/tinymq/pkg"
-	testtools "github.com/oo-developer/tinymq/test"
+	mmq "github.com/oo-developer/mmq/pkg"
+	testtools "github.com/oo-developer/mmq/test"
 )
 
 const (
@@ -22,11 +22,11 @@ func main() {
 
 	server := testtools.StartServer(*serverConfigFile)
 
-	clientConfig, err := tinymq.LoadConfig(*clientConfigFile)
+	clientConfig, err := mmq.LoadConfig(*clientConfigFile)
 	if err != nil {
 		panic(err)
 	}
-	client, err := tinymq.NewClient(clientConfig)
+	client, err := mmq.NewClient(clientConfig)
 	if err != nil {
 		panic(err)
 	}
@@ -36,7 +36,7 @@ func main() {
 	}
 
 	if !*read {
-		client.Publish(TOPIC_TEST1, []byte("Retained test"), tinymq.Persistent)
+		client.Publish(TOPIC_TEST1, []byte("Retained test"), mmq.Persistent)
 	} else {
 		wg := sync.WaitGroup{}
 		wg.Add(1)

@@ -2,19 +2,21 @@ package transport
 
 import (
 	"errors"
+	"io"
 	"net"
 	"os"
 
-	"github.com/oo-developer/tinymq/pkg"
-	"github.com/oo-developer/tinymq/src/common"
-	"github.com/oo-developer/tinymq/src/config"
-	log "github.com/oo-developer/tinymq/src/logging"
+	"github.com/oo-developer/mmq/pkg"
+	"github.com/oo-developer/mmq/src/common"
+	"github.com/oo-developer/mmq/src/config"
+	log "github.com/oo-developer/mmq/src/logging"
 )
 
 type transport struct {
 	config          *config.Transport
-	broker          common.BrokerService
-	users           common.UserService
+	brokerService   common.BrokerService
+	userService     common.UserService
+	cliService      common.CliService
 	privateKey      *api.KyberPrivateKey
 	publicKey       *api.KyberPublicKey
 	publicKeyPem    []byte
@@ -23,7 +25,7 @@ type transport struct {
 	listenerPublish net.Listener
 }
 
-func NewTransportService(config *config.Config, b common.BrokerService, u common.UserService) common.Service {
+func NewTransportService(config *config.Config, b common.BrokerService, u common.UserService, c common.CliService) common.Service {
 
 	privateKey, err := api.LoadKyberPrivateKeyFile(config.Crypto.PrivateKeyFile)
 	if err != nil {
@@ -39,8 +41,9 @@ func NewTransportService(config *config.Config, b common.BrokerService, u common
 	}
 	return &transport{
 		config:          &config.Transport,
-		broker:          b,
-		users:           u,
+		brokerService:   b,
+		userService:     u,
+		cliService:      c,
 		privateKey:      privateKey,
 		publicKey:       publicKey,
 		publicKeyPem:    publicKeyPem,
@@ -137,7 +140,7 @@ func (s *transport) handleConnectionCommand(conn net.Conn) {
 		return
 	}
 	userName := string(msg.Payload)
-	user, ok := s.users.LookupUserByName(userName)
+	user, ok := s.userService.LookupUserByName(userName)
 	if !ok {
 		log.Warnf("User %s not found", userName)
 		return
@@ -145,8 +148,8 @@ func (s *transport) handleConnectionCommand(conn net.Conn) {
 	log.Infof("New connection from '%s' for user '%s'", conn.RemoteAddr(), user.Name())
 	clientId := msg.ClientId
 
-	s.broker.RegisterClient(clientId, user)
-	defer s.broker.UnregisterClient(clientId)
+	s.brokerService.RegisterClient(clientId, user)
+	defer s.brokerService.UnregisterClient(clientId)
 	handshakeCipher = api.NewKyberCipher(s.privateKey, user.PublicKey())
 
 	authAck := &api.Message{
@@ -158,7 +161,6 @@ func (s *transport) handleConnectionCommand(conn net.Conn) {
 		log.Errorf("Failed to send AUTHENTICATE_ACK: %v", err)
 		return
 	}
-	log.Infof("Client %s connected", clientId)
 
 	// SESSION KEY
 	msg, err = api.Receive(conn, handshakeCipher)
@@ -188,6 +190,9 @@ func (s *transport) handleConnectionCommand(conn net.Conn) {
 
 	for {
 		msg, err := api.Receive(conn, transportCipher)
+		if errors.Is(err, io.EOF) {
+			return
+		}
 		if err != nil {
 			log.Errorf("Client %s receive error: %v", clientId, err)
 			continue
@@ -199,27 +204,27 @@ func (s *transport) handleConnectionCommand(conn net.Conn) {
 	log.Infof("Client %s disconnected", clientId)
 }
 
-func (s *transport) handleMessage(clientID string, conn net.Conn, cipher api.Cipher, msg *api.Message) bool {
+func (s *transport) handleMessage(clientId string, conn net.Conn, cipher api.Cipher, msg *api.Message) bool {
 	switch msg.Type {
 	case api.TypePublish:
-		s.broker.Publish(msg.Properties, msg.Topic, msg.Payload, clientID)
+		s.brokerService.Publish(msg.Properties, msg.Topic, msg.Payload, clientId)
 		connAck := &api.Message{
 			Type:     api.TypePublishAck,
-			ClientId: clientID,
+			ClientId: clientId,
 		}
 		if err := connAck.Send(conn, cipher); err != nil {
 			log.Errorf("Failed to send PublishAck message: %v", err)
 			return true
 		}
 	case api.TypeSubscribe:
-		subscriptionId, err := s.broker.Subscribe(clientID, msg.Topic)
+		subscriptionId, err := s.brokerService.Subscribe(clientId, msg.Topic)
 		if err != nil {
-			log.Errorf("Subscribe error for client %s: %v", clientID, err)
+			log.Errorf("Subscribe error for client %s: %v", clientId, err)
 			return true
 		}
 		connAck := &api.Message{
 			Type:           api.TypeSubscribeAck,
-			ClientId:       clientID,
+			ClientId:       clientId,
 			SubscriptionId: subscriptionId,
 		}
 		if err := connAck.Send(conn, cipher); err != nil {
@@ -227,12 +232,12 @@ func (s *transport) handleMessage(clientID string, conn net.Conn, cipher api.Cip
 			return true
 		}
 	case api.TypeUnsubscribe:
-		if err := s.broker.Unsubscribe(clientID, msg.Topic, msg.SubscriptionId); err != nil {
-			log.Errorf("Unsubscribe error for client %s: %v", clientID, err)
+		if err := s.brokerService.Unsubscribe(clientId, msg.Topic, msg.SubscriptionId); err != nil {
+			log.Errorf("Unsubscribe error for client %s: %v", clientId, err)
 		}
 		connAck := &api.Message{
 			Type:     api.TypeUnsubscribeAck,
-			ClientId: clientID,
+			ClientId: clientId,
 		}
 		if err := connAck.Send(conn, cipher); err != nil {
 			log.Errorf("Failed to send UnsubscribeAck message: %v", err)
@@ -241,17 +246,27 @@ func (s *transport) handleMessage(clientID string, conn net.Conn, cipher api.Cip
 	case api.TypePing:
 		connAck := &api.Message{
 			Type:     api.TypePong,
-			ClientId: clientID,
+			ClientId: clientId,
 		}
 		if err := connAck.Send(conn, cipher); err != nil {
 			log.Errorf("Failed to send Pong message: %v", err)
 			return true
 		}
+	case api.TypeCliCommand:
+		result := s.cliService.Execute(clientId, msg.Payload)
+		cliCommandAck := &api.Message{
+			Type:     api.TypeCliCommandAck,
+			ClientId: clientId,
+			Payload:  result,
+		}
+		if err := cliCommandAck.Send(conn, cipher); err != nil {
+			log.Errorf("Failed to send CliCommandAck message: %v", err)
+		}
 	case api.TypeDisconnect:
-		log.Infof("Client %s requested disconnect", clientID)
+		log.Infof("Client %s requested disconnect", clientId)
 		return false
 	default:
-		log.Infof("Unknown message type from client '%s': %v", clientID, msg.Type)
+		log.Infof("Unknown message type from client '%s': %v", clientId, msg.Type)
 	}
 	return true
 }
@@ -292,7 +307,7 @@ func (s *transport) handleConnectionPublish(conn net.Conn) {
 		return
 	}
 	userName := string(msg.Payload)
-	user, ok := s.users.LookupUserByName(userName)
+	user, ok := s.userService.LookupUserByName(userName)
 	if !ok {
 		log.Warnf("User '%s' not found", userName)
 		return
@@ -314,7 +329,7 @@ func (s *transport) handleConnectionPublish(conn net.Conn) {
 		return
 	}
 
-	client := s.broker.Client(clientID)
+	client := s.brokerService.Client(clientID)
 	if client == nil {
 		log.Warnf("Broker client '%s' not found", clientID)
 	}

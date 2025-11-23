@@ -6,9 +6,9 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
-	"github.com/oo-developer/tinymq/pkg"
-	"github.com/oo-developer/tinymq/src/common"
-	log "github.com/oo-developer/tinymq/src/logging"
+	"github.com/oo-developer/mmq/pkg"
+	"github.com/oo-developer/mmq/src/common"
+	log "github.com/oo-developer/mmq/src/logging"
 )
 
 type subscription struct {
@@ -26,6 +26,10 @@ type clientInfo struct {
 
 func (c *clientInfo) Id() string {
 	return c.id
+}
+
+func (c *clientInfo) User() common.User {
+	return c.user
 }
 
 func (c *clientInfo) MessageChan() <-chan *api.Message {
@@ -123,6 +127,16 @@ func (b *broker) Client(clientId string) common.BrokerClient {
 		return client
 	}
 	return nil
+}
+
+func (b *broker) AllClients() []common.BrokerClient {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	clients := make([]common.BrokerClient, 0, len(b.clients))
+	for _, client := range b.clients {
+		clients = append(clients, client)
+	}
+	return clients
 }
 
 // Subscribe adds a subscription for a clientInfo
@@ -232,6 +246,8 @@ func (b *broker) publish(msg *api.Message) {
 }
 
 func (b *broker) findMatchingTopics(publishedTopic string) []string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	if _, ok := b.matchCache[publishedTopic]; !ok {
 		b.matchCache[publishedTopic] = make([]string, 0)
 		for subTopic := range b.subscriptions {

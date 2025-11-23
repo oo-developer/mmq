@@ -1,4 +1,4 @@
-module github.com/oo-developer/tinymq
+module github.com/oo-developer/mmq
 
 go 1.24.0
 

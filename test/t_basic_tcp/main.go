@@ -5,8 +5,8 @@ import (
 	"log"
 	"time"
 
-	tinymq "github.com/oo-developer/tinymq/pkg"
-	testtools "github.com/oo-developer/tinymq/test"
+	mmq "github.com/oo-developer/mmq/pkg"
+	testtools "github.com/oo-developer/mmq/test"
 )
 
 const (
@@ -23,12 +23,12 @@ func main() {
 
 	server := testtools.StartServer(*serverConfigFile)
 
-	clientConfig, err := tinymq.LoadConfig(*clientConfigFile)
+	clientConfig, err := mmq.LoadConfig(*clientConfigFile)
 	if err != nil {
 		panic(err)
 	}
 	start := time.Now().UnixMilli()
-	client, err := tinymq.NewClient(clientConfig)
+	client, err := mmq.NewClient(clientConfig)
 	if err != nil {
 		panic(err)
 	}
@@ -58,7 +58,7 @@ func main() {
 	msg += msg
 	log.Printf("Message size: %d ", len(msg))
 	for ii := 0; ii <= totalCount; ii++ {
-		client.Publish(TOPIC_TEST1, []byte(msg), tinymq.Retained)
+		client.Publish(TOPIC_TEST1, []byte(msg), mmq.Retained)
 		if ii%100000 == 0 {
 			log.Printf("Sent %d messages", ii)
 		}

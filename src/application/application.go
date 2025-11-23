@@ -5,14 +5,15 @@ import (
 	"os/signal"
 	"sync"
 
-	"github.com/oo-developer/tinymq/src/broker"
-	"github.com/oo-developer/tinymq/src/common"
-	"github.com/oo-developer/tinymq/src/config"
-	"github.com/oo-developer/tinymq/src/logging"
-	log "github.com/oo-developer/tinymq/src/logging"
-	"github.com/oo-developer/tinymq/src/storage"
-	"github.com/oo-developer/tinymq/src/transport"
-	"github.com/oo-developer/tinymq/src/user"
+	"github.com/oo-developer/mmq/src/broker"
+	"github.com/oo-developer/mmq/src/cli"
+	"github.com/oo-developer/mmq/src/common"
+	"github.com/oo-developer/mmq/src/config"
+	"github.com/oo-developer/mmq/src/logging"
+	log "github.com/oo-developer/mmq/src/logging"
+	"github.com/oo-developer/mmq/src/storage"
+	"github.com/oo-developer/mmq/src/transport"
+	"github.com/oo-developer/mmq/src/user"
 )
 
 type application struct {
@@ -22,7 +23,8 @@ type application struct {
 	brokerService    common.BrokerService
 	transportService common.Service
 	userService      common.UserService
-	storage          common.StorageService
+	storageService   common.StorageService
+	cliService       common.CliService
 }
 
 func NewApplication(config *config.Config) common.Service {
@@ -30,17 +32,18 @@ func NewApplication(config *config.Config) common.Service {
 		config: config,
 	}
 	app.loggingService = logging.NewLoggingService(app.config.Logging.Format, app.config.Logging.Output, app.config.Logging.Level)
-	app.storage = storage.NewStorage(app.config)
-	app.brokerService = broker.NewBrokerService(app.storage)
-	app.userService = user.NewUserService(app.config)
-	app.transportService = transport.NewTransportService(app.config, app.brokerService, app.userService)
+	app.storageService = storage.NewStorage(app.config)
+	app.brokerService = broker.NewBrokerService(app.storageService)
+	app.userService = user.NewUserService(app.config, app.storageService)
+	app.cliService = cli.NewCliService(app.config, app.userService, app.brokerService)
+	app.transportService = transport.NewTransportService(app.config, app.brokerService, app.userService, app.cliService)
 	return app
 }
 
 func (a *application) Start() {
 	a.wait.Add(1)
 	a.loggingService.Start()
-	a.storage.Start()
+	a.storageService.Start()
 	a.userService.Start()
 	a.brokerService.Start()
 	a.transportService.Start()
@@ -53,7 +56,7 @@ func (a *application) Shutdown() {
 	a.transportService.Shutdown()
 	a.brokerService.Shutdown()
 	a.userService.Shutdown()
-	a.storage.Shutdown()
+	a.storageService.Shutdown()
 	a.loggingService.Shutdown()
 	log.Info("Application shut down")
 }

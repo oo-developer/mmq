@@ -6,16 +6,15 @@ import (
 	"os"
 	"path/filepath"
 
-	api "github.com/oo-developer/tinymq/pkg"
-	"github.com/oo-developer/tinymq/src/application"
-	"github.com/oo-developer/tinymq/src/config"
-	"github.com/oo-developer/tinymq/src/user"
+	api "github.com/oo-developer/mmq/pkg"
+	"github.com/oo-developer/mmq/src/application"
+	"github.com/oo-developer/mmq/src/config"
+	"github.com/oo-developer/mmq/src/storage"
+	"github.com/oo-developer/mmq/src/user"
 )
 
 func main() {
 	configFile := flag.String("config", "server_config.json", "Path to config file")
-	addUser := flag.String("add-user", "", "AddMessage user")
-	removeUser := flag.String("rm-user", "", "RemoveMessage user")
 	flag.Parse()
 
 	if configFile == nil || *configFile == "" {
@@ -23,28 +22,6 @@ func main() {
 		os.Exit(1)
 	}
 	configuration := config.Load(*configFile)
-	if addUser != nil && *addUser != "" {
-		users := user.NewUserService(configuration)
-		err := users.AddUser(*addUser)
-		users.Shutdown()
-		if err != nil {
-			fmt.Printf("[ERROR] adding user: %s\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("[OK] Added user: %s\n", *addUser)
-		os.Exit(0)
-	}
-	if removeUser != nil && *removeUser != "" {
-		users := user.NewUserService(configuration)
-		err := users.RemoveUserByName(*removeUser)
-		users.Shutdown()
-		if err != nil {
-			fmt.Printf("[ERROR] removing user: %s\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("[OK] Removed user: %s\n", *removeUser)
-		os.Exit(0)
-	}
 	initialize(configuration)
 	app := application.NewApplication(configuration)
 	app.Start()
@@ -85,5 +62,26 @@ func initialize(configuration *config.Config) {
 		}
 		fmt.Printf("[OK] Created private key file: %s\n", configuration.Crypto.PrivateKeyFile)
 		fmt.Printf("[OK] Created public key file: %s\n", configuration.Crypto.PublicKeyFile)
+
+		storageService := storage.NewStorage(configuration)
+		storageService.Start()
+		userService := user.NewUserService(configuration, storageService)
+		userService.Start()
+		privateAdminKeyPem, err := userService.AddUser("admin", true)
+		userService.Shutdown()
+		if err != nil {
+			fmt.Printf("[ERROR] adding user: %s\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("[OK] Added user: %s\n", "admin")
+		homeDir, _ := os.UserHomeDir()
+		mmqDir := filepath.Join(homeDir, ".mmq")
+		privateAdminKeyPemFileName := filepath.Join(mmqDir, "private_admin_key.pem")
+		err = os.WriteFile(privateAdminKeyPemFileName, []byte(privateAdminKeyPem), 0600)
+		if err != nil {
+			fmt.Printf("[ERROR] Error creating private admin key file: %s\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("[OK] Created private admin key file: %s\n", privateAdminKeyPemFileName)
 	}
 }

@@ -1,4 +1,4 @@
-# tinymq - Quick Start Guide
+# mmq - Quick Start Guide
 
 ## 1. Build the Project
 
